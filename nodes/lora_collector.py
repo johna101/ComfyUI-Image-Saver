@@ -1,5 +1,5 @@
 # ComfyUI-Image-Saver — LoRA Collector Node
-# Reads structured LoRA data from Power Lora Loader (rgthree) by node ID,
+# Reads structured LoRA data from Power Lora Loader (rgthree) via MODEL wire,
 # resolves hashes and CivitAI metadata, outputs a clean LORA_INFO array.
 
 import re
@@ -17,15 +17,11 @@ class LoraCollector:
     def INPUT_TYPES(cls) -> dict[str, Any]:
         return {
             "required": {
-                "lora_loader_node_id": ("INT", {
-                    "default": 0, "min": 0, "max": 9999,
-                    "tooltip": "The node ID of the Power Lora Loader (rgthree) to read from"
+                "model": ("MODEL", {
+                    "tooltip": "Connect the MODEL output from Power Lora Loader here"
                 }),
             },
             "optional": {
-                "opt_model": ("MODEL", {
-                    "tooltip": "Connect the MODEL output from Power Lora Loader here to ensure execution order (value not used)"
-                }),
                 "include_disabled": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include disabled LoRAs in the output (marked as enabled: false)"
@@ -37,34 +33,37 @@ class LoraCollector:
             },
             "hidden": {
                 "prompt": "PROMPT",
-                "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
 
-    RETURN_TYPES = ("LORA_INFO",)
-    RETURN_NAMES = ("lora_info",)
-    OUTPUT_TOOLTIPS = ("Structured LoRA information array for MetadataCompiler",)
+    RETURN_TYPES = ("LORA_INFO", "MODEL")
+    RETURN_NAMES = ("lora_info", "model")
+    OUTPUT_TOOLTIPS = ("Structured LoRA information array for MetadataCompiler", "Model passthrough")
     FUNCTION = "collect"
     CATEGORY = "ImageSaver"
     DESCRIPTION = "Reads LoRA data from Power Lora Loader (rgthree) and builds structured metadata"
 
     def collect(
         self,
-        lora_loader_node_id: int,
-        opt_model=None,
+        model,
         include_disabled: bool = True,
         download_civitai_data: bool = True,
         prompt: dict[str, Any] | None = None,
-        extra_pnginfo: dict[str, Any] | None = None,
-    ) -> tuple[list[dict[str, Any]],]:
-        if not prompt or not lora_loader_node_id:
-            return ([],)
+    ) -> tuple[list[dict[str, Any]], Any]:
+        if not prompt:
+            return ([], model)
 
-        # Read the Power Lora Loader node from the execution prompt
-        node = prompt.get(str(lora_loader_node_id))
+        # Find our own node in the prompt to trace where 'model' came from
+        source_node_id = _find_source_node_id(prompt, 'model')
+        if source_node_id is None:
+            print("LoraCollector: Could not determine source node for model input")
+            return ([], model)
+
+        # Read the source node (Power Lora Loader)
+        node = prompt.get(source_node_id)
         if node is None:
-            print(f"LoraCollector: Node {lora_loader_node_id} not found in prompt")
-            return ([],)
+            print(f"LoraCollector: Source node {source_node_id} not found in prompt")
+            return ([], model)
 
         inputs = node.get("inputs", {})
         lora_list = []
@@ -118,7 +117,22 @@ class LoraCollector:
 
             lora_list.append(lora_info)
 
-        return (lora_list,)
+        return (lora_list, model)
+
+
+def _find_source_node_id(prompt: dict, input_name: str) -> str | None:
+    """
+    Find which node's output is wired to our input by scanning the prompt.
+    In the execution prompt, linked inputs are stored as [source_node_id, output_index].
+    We find our own node (LoraCollector) and read the link for the given input.
+    """
+    for node_id, node in prompt.items():
+        if node.get("class_type") == "Lora Collector (Image Saver)":
+            inputs = node.get("inputs", {})
+            link = inputs.get(input_name)
+            if isinstance(link, list) and len(link) >= 1:
+                return str(link[0])
+    return None
 
 
 def _clean_lora_name(lora_path: str) -> str:
@@ -126,7 +140,6 @@ def _clean_lora_name(lora_path: str) -> str:
     import os
     basename = os.path.basename(lora_path)
     name, ext = os.path.splitext(basename)
-    # Only strip known model extensions
     if ext.lower() in {'.safetensors', '.ckpt', '.pt', '.pth', '.bin'}:
         return name
     return basename
