@@ -56,6 +56,7 @@ class MetadataCompiler:
                 "scheduler_name":        ("STRING",  {"default": 'normal', "multiline": False,                     "tooltip": "scheduler name (as string)"}),
                 "denoise":               ("FLOAT",   {"default": 1.0, "min": 0.0, "max": 1.0,                      "tooltip": "denoise value"}),
                 "clip_skip":             ("INT",     {"default": 0, "min": -24, "max": 24,                         "tooltip": "skip last CLIP layers (positive or negative value, 0 for no skip)"}),
+                "lora_info":             ("LORA_INFO", {"default": None,                                           "tooltip": "Structured LoRA data from LoraCollector node"}),
                 "additional_hashes":     ("STRING",  {"default": "", "multiline": False,                           "tooltip": "hashes separated by commas, optionally with names. 'Name:HASH' (e.g., 'MyLoRA:FF735FF83F98')\nWith download_civitai_data set to true, weights can be added as well. (e.g., 'HASH:Weight', 'Name:HASH:Weight')"}),
                 "download_civitai_data": ("BOOLEAN", {"default": True,                                             "tooltip": "Download and cache data from civitai.com to save correct metadata. Allows LoRA weights to be saved to the metadata."}),
             },
@@ -82,13 +83,14 @@ class MetadataCompiler:
         scheduler_name: str = "normal",
         denoise: float = 1.0,
         clip_skip: int = 0,
+        lora_info: list[dict] | None = None,
         additional_hashes: str = "",
         download_civitai_data: bool = True,
     ) -> tuple[Metadata, str, str]:
         metadata = MetadataCompiler.make_metadata(
             model_name, positive, negative, width, height, seed_value, steps, cfg,
             sampler_name, scheduler_name, denoise, clip_skip,
-            additional_hashes, download_civitai_data
+            lora_info, additional_hashes, download_civitai_data
         )
         return (metadata, metadata.final_hashes, json.dumps(metadata.gallery_metadata))
 
@@ -96,7 +98,8 @@ class MetadataCompiler:
     def make_metadata(model_name: str, positive: str, negative: str, width: int, height: int,
                       seed_value: int, steps: int, cfg: float, sampler_name: str,
                       scheduler_name: str, denoise: float, clip_skip: int,
-                      additional_hashes: str, download_civitai_data: bool) -> Metadata:
+                      lora_info: list[dict] | None, additional_hashes: str,
+                      download_civitai_data: bool) -> Metadata:
         model_name, additional_hashes = get_multiple_models(model_name, additional_hashes)
 
         ckpt_path = full_checkpoint_path_for(model_name)
@@ -147,6 +150,9 @@ class MetadataCompiler:
 
         if civitai_resources:
             gallery_metadata["civitai_resources"] = civitai_resources
+
+        if lora_info:
+            gallery_metadata["loras"] = lora_info
 
         # Build final hash string for chaining
         all_resources = {model_name: (ckpt_path, None, modelhash)} | loras | embeddings | manual_entries

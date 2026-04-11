@@ -111,7 +111,7 @@ class ImageSaver:
             metadata = MetadataCompiler.make_metadata(
                 modelname, positive, negative, width, height, seed_value, steps, cfg,
                 sampler_name, scheduler_name, denoise, clip_skip,
-                additional_hashes, download_civitai_data
+                None, additional_hashes, download_civitai_data
             )
 
         path = make_pathname(path, metadata.width, metadata.height, metadata.seed, metadata.model_name, counter, time_format, metadata.sampler_name, metadata.steps, metadata.cfg, metadata.scheduler_name, metadata.denoise, metadata.clip_skip, '')

@@ -1,6 +1,7 @@
 from typing import Any
 
 from .nodes.metadata import MetadataCompiler
+from .nodes.lora_collector import LoraCollector
 from .nodes.saver import ImageSaver, ImageSaverSimple
 from .nodes.loaders import CheckpointLoaderWithName, UNETLoaderWithName
 from .nodes.selectors import SamplerSelector, SchedulerSelector, SchedulerSelectorInspire, SchedulerSelectorEfficiency, InputParameters
@@ -15,6 +16,7 @@ NODE_CLASS_MAPPINGS: dict[str, Any] = {
     "Image Saver": ImageSaver,
     "Image Saver Simple": ImageSaverSimple,
     "Image Saver Metadata": MetadataCompiler,
+    "Lora Collector (Image Saver)": LoraCollector,
     "Sampler Selector (Image Saver)": SamplerSelector,
     "Scheduler Selector (Image Saver)": SchedulerSelector,
     "Scheduler Selector (inspire) (Image Saver)": SchedulerSelectorInspire,
