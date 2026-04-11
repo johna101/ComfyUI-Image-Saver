@@ -6,11 +6,13 @@ import json
 import piexif
 import piexif.helper
 
-def save_image(image: Image, filepath: str, extension: str, quality_jpeg_or_webp: int, lossless_webp: bool, optimize_png: bool, a111_params: str, prompt: dict[str, Any] | None, extra_pnginfo: dict[str, Any] | None, embed_workflow: bool) -> None:
+def save_image(image: Image, filepath: str, extension: str, quality_jpeg_or_webp: int, lossless_webp: bool, optimize_png: bool, gallery_metadata: dict, prompt: dict[str, Any] | None, extra_pnginfo: dict[str, Any] | None, embed_workflow: bool) -> None:
+    gallery_metadata_json = json.dumps(gallery_metadata, separators=(',', ':')) if gallery_metadata else ""
+
     if extension == 'png':
         metadata = PngInfo()
-        if a111_params:
-            metadata.add_text("parameters", a111_params)
+        if gallery_metadata_json:
+            metadata.add_text("gallery_metadata", gallery_metadata_json)
 
         if embed_workflow:
             if extra_pnginfo is not None:
@@ -38,9 +40,9 @@ def save_image(image: Image, filepath: str, extension: str, quality_jpeg_or_webp
                 "0th": pnginfo_json | prompt_json
                 } if pnginfo_json or prompt_json else {}) | ({
                 "Exif": {
-                    piexif.ExifIFD.UserComment: cast(bytes, piexif.helper.UserComment.dump(a111_params, encoding="unicode"))
+                    piexif.ExifIFD.UserComment: cast(bytes, piexif.helper.UserComment.dump(gallery_metadata_json, encoding="unicode"))
                 },
-            } if a111_params else {})
+            } if gallery_metadata_json else {})
             return cast(bytes, piexif.dump(exif_dict))
 
         exif_bytes = get_exif_bytes()

@@ -2,6 +2,7 @@
 # File writing, image encoding, and batch processing.
 
 import os
+import json
 from typing import Any
 
 import numpy as np
@@ -46,8 +47,8 @@ class ImageSaver:
                 "modelname":             ("STRING",  {"default": '', "multiline": False,                           "tooltip": "model name (can be multiple, separated by commas)"}),
                 "sampler_name":          ("STRING",  {"default": '', "multiline": False,                           "tooltip": "sampler name (as string)"}),
                 "scheduler_name":        ("STRING",  {"default": 'normal', "multiline": False,                     "tooltip": "scheduler name (as string)"}),
-                "positive":              ("STRING",  {"default": 'unknown', "multiline": True,                     "tooltip": "positive prompt"}),
-                "negative":              ("STRING",  {"default": 'unknown', "multiline": True,                     "tooltip": "negative prompt"}),
+                "positive":              ("STRING",  {"default": '', "multiline": True, "placeholder": "positive prompt",  "tooltip": "positive prompt"}),
+                "negative":              ("STRING",  {"default": '', "multiline": True, "placeholder": "negative prompt", "tooltip": "negative prompt"}),
                 "seed_value":            ("INT",     {"default": 0, "min": 0, "max": 0xffffffffffffffff,           "tooltip": "seed"}),
                 "width":                 ("INT",     {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 8,  "tooltip": "image width"}),
                 "height":                ("INT",     {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 8,  "tooltip": "image height"}),
@@ -55,8 +56,6 @@ class ImageSaver:
                 "clip_skip":             ("INT",     {"default": 0, "min": -24, "max": 24,                         "tooltip": "skip last CLIP layers (positive or negative value, 0 for no skip)"}),
                 "additional_hashes":     ("STRING",  {"default": "", "multiline": False,                           "tooltip": "hashes separated by commas, optionally with names. 'Name:HASH' (e.g., 'MyLoRA:FF735FF83F98')"}),
                 "download_civitai_data": ("BOOLEAN", {"default": True,                                             "tooltip": "Download and cache data from civitai.com to save correct metadata."}),
-                "easy_remix":            ("BOOLEAN", {"default": True,                                             "tooltip": "Strip LoRAs and simplify 'embedding:path' from the prompt."}),
-                "custom":                ("STRING",  {"default": "", "multiline": False,                           "tooltip": "custom string to add to the metadata"}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -65,7 +64,7 @@ class ImageSaver:
         }
 
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("hashes", "a1111_params")
+    RETURN_NAMES = ("hashes", "gallery_metadata_json")
     OUTPUT_TOOLTIPS = ("Comma-separated list of the hashes to chain with other Image Saver additional_hashes", "Written parameters to the image metadata")
     FUNCTION = "save_files"
 
@@ -95,8 +94,8 @@ class ImageSaver:
         modelname: str = "",
         sampler_name: str = "",
         scheduler_name: str = "normal",
-        positive: str = "unknown",
-        negative: str = "unknown",
+        positive: str = "",
+        negative: str = "",
         seed_value: int = 0,
         width: int = 512,
         height: int = 512,
@@ -104,8 +103,6 @@ class ImageSaver:
         clip_skip: int = 0,
         additional_hashes: str = "",
         download_civitai_data: bool = True,
-        easy_remix: bool = True,
-        custom: str = "",
         prompt: dict[str, Any] | None = None,
         extra_pnginfo: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -113,18 +110,18 @@ class ImageSaver:
         if metadata is None:
             metadata = MetadataCompiler.make_metadata(
                 modelname, positive, negative, width, height, seed_value, steps, cfg,
-                sampler_name, scheduler_name, denoise, clip_skip, custom,
-                additional_hashes, download_civitai_data, easy_remix
+                sampler_name, scheduler_name, denoise, clip_skip,
+                additional_hashes, download_civitai_data
             )
 
-        path = make_pathname(path, metadata.width, metadata.height, metadata.seed, metadata.model_name, counter, time_format, metadata.sampler_name, metadata.steps, metadata.cfg, metadata.scheduler_name, metadata.denoise, metadata.clip_skip, metadata.custom)
+        path = make_pathname(path, metadata.width, metadata.height, metadata.seed, metadata.model_name, counter, time_format, metadata.sampler_name, metadata.steps, metadata.cfg, metadata.scheduler_name, metadata.denoise, metadata.clip_skip, '')
 
         filenames = _save_images(images, filename, extension, path, quality_jpeg_or_webp, lossless_webp, optimize_png, prompt, extra_pnginfo, save_workflow_as_json, embed_workflow, counter, time_format, metadata)
 
         subfolder = os.path.normpath(path)
 
         result: dict[str, Any] = {
-            "result": (metadata.final_hashes, metadata.a111_params),
+            "result": (metadata.final_hashes, json.dumps(metadata.gallery_metadata)),
         }
 
         if show_preview:
@@ -163,7 +160,7 @@ class ImageSaverSimple:
         }
 
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("hashes", "a1111_params")
+    RETURN_NAMES = ("hashes", "gallery_metadata_json")
     OUTPUT_TOOLTIPS = ("Comma-separated list of the hashes to chain with other Image Saver additional_hashes", "Written parameters to the image metadata")
     FUNCTION = "save_images"
 
@@ -192,14 +189,14 @@ class ImageSaverSimple:
         if metadata is None:
             metadata = Metadata('', '', '', 512, 512, 0, 20, 7.0, '', 'normal', 1.0, 0, '', '', '', '', '')
 
-        path = make_pathname(path, metadata.width, metadata.height, metadata.seed, metadata.model_name, counter, time_format, metadata.sampler_name, metadata.steps, metadata.cfg, metadata.scheduler_name, metadata.denoise, metadata.clip_skip, metadata.custom)
+        path = make_pathname(path, metadata.width, metadata.height, metadata.seed, metadata.model_name, counter, time_format, metadata.sampler_name, metadata.steps, metadata.cfg, metadata.scheduler_name, metadata.denoise, metadata.clip_skip, '')
 
         filenames = _save_images(images, filename, extension, path, quality_jpeg_or_webp, lossless_webp, optimize_png, prompt, extra_pnginfo, save_workflow_as_json, embed_workflow, counter, time_format, metadata)
 
         subfolder = os.path.normpath(path)
 
         result: dict[str, Any] = {
-            "result": (metadata.final_hashes, metadata.a111_params),
+            "result": (metadata.final_hashes, json.dumps(metadata.gallery_metadata)),
         }
 
         if show_preview:
@@ -226,7 +223,7 @@ def _save_images(
     time_format: str,
     metadata: Metadata
 ) -> list[str]:
-    filename_prefix = make_filename(filename_pattern, metadata.width, metadata.height, metadata.seed, metadata.model_name, counter, time_format, metadata.sampler_name, metadata.steps, metadata.cfg, metadata.scheduler_name, metadata.denoise, metadata.clip_skip, metadata.custom)
+    filename_prefix = make_filename(filename_pattern, metadata.width, metadata.height, metadata.seed, metadata.model_name, counter, time_format, metadata.sampler_name, metadata.steps, metadata.cfg, metadata.scheduler_name, metadata.denoise, metadata.clip_skip, '')
 
     output_path = os.path.join(folder_paths.output_directory, path)
 
@@ -246,7 +243,7 @@ def _save_images(
         final_filename = f"{current_filename_prefix}.{extension}"
         filepath = os.path.join(output_path, final_filename)
 
-        save_image(img, filepath, extension, quality_jpeg_or_webp, lossless_webp, optimize_png, metadata.a111_params, prompt, extra_pnginfo, embed_workflow)
+        save_image(img, filepath, extension, quality_jpeg_or_webp, lossless_webp, optimize_png, metadata.gallery_metadata, prompt, extra_pnginfo, embed_workflow)
 
         if save_workflow_as_json:
             save_json(extra_pnginfo, os.path.join(output_path, current_filename_prefix))
