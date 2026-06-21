@@ -236,8 +236,13 @@ class WorkflowMetadataResolver:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
+        # `bindings` is optional (not required) so that, even if the front-end
+        # component editor fails to supply it, the node never blocks a queue — it
+        # just declares nothing. The editor (js/metadata_resolver_picker.js)
+        # replaces the auto-created text widget with a row editor that serializes
+        # the same `bindings` string into the prompt.
         return {
-            "required": {
+            "optional": {
                 "bindings": ("STRING", {
                     "default": "positive:\nnegative:\nmodel:\nsampler:\nscheduler:\n"
                                "steps:\ncfg:\nseed:\nwidth:\nheight:",
@@ -255,7 +260,7 @@ class WorkflowMetadataResolver:
 
     def resolve(
         self,
-        bindings: str,
+        bindings: str = "",
         prompt: dict[str, Any] | None = None,
         extra_pnginfo: dict[str, Any] | None = None,
     ) -> dict[str, Any]:

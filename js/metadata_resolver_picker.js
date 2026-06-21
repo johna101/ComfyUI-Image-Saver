@@ -160,12 +160,16 @@ function autoFillRows(graph) {
 // ---- row editing ------------------------------------------------------------
 
 function syncRows(node) {
-    const widget = node.widgets?.find(w => w.name === BINDINGS_WIDGET);
-    if (widget) {
-        widget.value = serializeRows(node._resolverRows);
-        widget.callback?.(widget.value);
-    }
+    // Row state is the source of truth; the bindings DOM widget reads it on
+    // demand via getValue (see setupResolverEditor), so a redraw is all we need.
     node.graph?.setDirtyCanvas(true, true);
+}
+
+/** Remove stale output slots — the node has no outputs, but workflows saved with
+ *  the older definition restore them on load. */
+function stripOutputs(node) {
+    if (!node.outputs) return;
+    while (node.outputs.length) node.removeOutput(node.outputs.length - 1);
 }
 
 /** Insert or update a row for `field`, pointing at #nodeId.input. Returns the row. */
@@ -292,15 +296,17 @@ function renderRows(node) {
 }
 
 function setupResolverEditor(node) {
-    const textWidget = node.widgets?.find(w => w.name === BINDINGS_WIDGET);
-    if (!textWidget || node._resolverListEl) return;
+    if (node._resolverListEl) return;
 
-    // Hide the underlying text widget — it stays only to serialize the rows.
-    textWidget.computeSize = () => [0, -4];
-    textWidget.type = "hidden";
+    // Take the auto-created text widget's value, then remove it entirely: the rows
+    // are the data, and the DOM widget below serializes them as `bindings` itself
+    // (no separate text box to hide).
+    const idx = (node.widgets ?? []).findIndex(w => w.name === BINDINGS_WIDGET);
+    const initial = idx >= 0 ? node.widgets[idx].value : "";
+    if (idx >= 0) node.widgets.splice(idx, 1);
 
     injectStyles();
-    node._resolverRows = parseRows(textWidget.value);
+    node._resolverRows = parseRows(initial);
 
     const container = document.createElement("div");
     container.className = "imgsaver-resolver";
@@ -327,7 +333,13 @@ function setupResolverEditor(node) {
         renderRows(node); syncRows(node);
     });
 
-    const domWidget = node.addDOMWidget("resolver_editor", "resolver_rows", container, { serialize: false });
+    // The DOM widget IS the `bindings` input: it serializes the rows into the
+    // prompt (which the gallery reads), so there is no separate text widget.
+    const domWidget = node.addDOMWidget(BINDINGS_WIDGET, "resolver_rows", container, {
+        serialize: true,
+        getValue: () => serializeRows(node._resolverRows),
+        setValue: (v) => { node._resolverRows = parseRows(v); renderRows(node); },
+    });
     node._resolverResize = () => {
         const rows = node._resolverRows.length;
         domWidget.computeSize = (w) => [w, 26 * rows + 34];
@@ -370,14 +382,22 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = function () {
                 onNodeCreated?.apply(this, arguments);
                 setupResolverEditor(this);
+                stripOutputs(this);
             };
-            // Re-sync rows from the loaded bindings string when a saved graph is opened.
+            // On load: drop the stale output slots and rebuild rows from the saved
+            // bindings string (read from widgets_values, robust to whether the host
+            // routed it through the DOM widget's setValue).
             const onConfigure = nodeType.prototype.onConfigure;
-            nodeType.prototype.onConfigure = function () {
+            nodeType.prototype.onConfigure = function (info) {
                 onConfigure?.apply(this, arguments);
-                const widget = this.widgets?.find(w => w.name === BINDINGS_WIDGET);
-                if (widget && this._resolverListEl) {
-                    this._resolverRows = parseRows(widget.value);
+                stripOutputs(this);
+                if (!this._resolverListEl) return;
+                const vals = info?.widgets_values;
+                let saved = null;
+                if (Array.isArray(vals)) saved = vals.find(v => typeof v === "string");
+                else if (vals && typeof vals === "object") saved = vals[BINDINGS_WIDGET];
+                if (typeof saved === "string") {
+                    this._resolverRows = parseRows(saved);
                     renderRows(this);
                 }
             };
