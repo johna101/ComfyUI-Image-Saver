@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 class AnyToString:
@@ -120,6 +119,8 @@ def parse_bindings(text: str) -> tuple[list[tuple[str, str, str]], list[str]]:
         if not field:
             errors.append(f"line {lineno}: empty field name — '{raw}'")
             continue
+        if not pointer:
+            continue  # an unbound row (`field:` with no target) — placeholder, not an error
         if not dot or not node_id or not input_name:
             errors.append(f"line {lineno}: pointer must be 'node_id.input_name' — '{raw}'")
             continue
@@ -213,28 +214,24 @@ def resolve_bindings(
 
 
 class WorkflowMetadataResolver:
-    """Resolve many `field: #node.input` bindings from the live workflow at once.
+    """Declare where each metadata field lives in the workflow.
 
-    A wiring-free alternative to the loader/selector nodes: point at where each
-    value lives in the graph and this fetches them all from the PROMPT at save
-    time, emitting a gallery-metadata dict ready for the Image Saver.
+    A wiring-free, pure-declaration node: each binding (`field: #node.input`)
+    records where a value lives in the graph. The node has no outputs and needs
+    no wiring — it is OUTPUT_NODE only so it stays in the executed prompt, which
+    embeds the bindings into saved images. Downstream consumers (e.g. the gallery)
+    read the bindings back from the embedded prompt and resolve them there.
     """
 
-    RETURN_TYPES = ("METADATA", "STRING")
-    RETURN_NAMES = ("metadata", "gallery_metadata_json")
-    OUTPUT_TOOLTIPS = (
-        "Resolved metadata for Image Saver (plug into its 'metadata' input)",
-        "Resolved bindings as a JSON string",
-    )
+    OUTPUT_NODE = True
+    RETURN_TYPES = ()
     FUNCTION = "resolve"
     CATEGORY = "ImageSaver/utils"
-    DESCRIPTION = "Resolve multiple workflow fields by node-id pointers into gallery metadata"
+    DESCRIPTION = "Declare where metadata fields live in the workflow (resolved downstream, e.g. by the gallery)"
 
     @classmethod
     def IS_CHANGED(cls, **kwargs) -> float:
-        # The pointed-at nodes are not wired inputs, so they don't enter this
-        # node's cache key. Force re-execution every run so resolved values
-        # always reflect the current PROMPT rather than a cached binding string.
+        # Always re-run so the server-side binding validation reflects the live graph.
         return float("nan")
 
     @classmethod
@@ -242,13 +239,12 @@ class WorkflowMetadataResolver:
         return {
             "required": {
                 "bindings": ("STRING", {
-                    "default": "// Right-click any node -> 'Send to Metadata Resolver',\n"
-                               "// or use the 'Auto-fill from sampler' button below.\n"
-                               "// One binding per line:  field: #node_id.input",
+                    "default": "positive:\nnegative:\nmodel:\nsampler:\nscheduler:\n"
+                               "steps:\ncfg:\nseed:\nwidth:\nheight:",
                     "multiline": True,
-                    "tooltip": "One binding per line: `field: #node_id.input_name`.\n"
-                               "Separator may be ':' or '='; the '#' is optional.\n"
-                               "Lines starting with '#' or '//' are comments.",
+                    "tooltip": "Each row binds a metadata field to a workflow value: `field: #node_id.input`.\n"
+                               "Use the component rows (right-click a node -> Send to Metadata Resolver,\n"
+                               "or Auto-fill). A row left with no target is unbound and ignored.",
                 }),
             },
             "hidden": {
@@ -262,90 +258,17 @@ class WorkflowMetadataResolver:
         bindings: str,
         prompt: dict[str, Any] | None = None,
         extra_pnginfo: dict[str, Any] | None = None,
-    ):
+    ) -> dict[str, Any]:
+        # Pure declaration: no outputs, nothing wired in. OUTPUT_NODE keeps the
+        # node in the executed prompt so its bindings are embedded in saved
+        # images; the values are read back and resolved downstream (e.g. the
+        # gallery). We resolve here only to surface binding problems in the log.
         parsed, parse_errors = parse_bindings(bindings)
         for err in parse_errors:
             print(f"WorkflowMetadataResolver: {err}")
-
-        if not prompt:
-            print("WorkflowMetadataResolver: no PROMPT available; returning empty metadata")
-            return (_build_metadata({}), "{}")
-
-        workflow = extra_pnginfo.get("workflow") if isinstance(extra_pnginfo, dict) else None
-        resolved, resolve_errors = resolve_bindings(parsed, prompt, workflow)
-        for err in resolve_errors:
-            print(f"WorkflowMetadataResolver: {err}")
-
-        return (_build_metadata(resolved), json.dumps(resolved))
-
-
-# Aliases mapping resolved field names onto the Metadata dataclass attributes used
-# for filename templating. Resolved values are also embedded verbatim as
-# gallery_metadata, so unknown field names are preserved — these only feed the
-# scalar attributes the saver reads for `%seed`, `%steps`, etc.
-_METADATA_ALIASES = {
-    "model": "model_name", "model_name": "model_name", "model_path": "model_name",
-    "positive": "positive", "negative": "negative",
-    "width": "width", "height": "height",
-    "seed": "seed", "steps": "steps", "cfg": "cfg",
-    "sampler": "sampler_name", "sampler_name": "sampler_name",
-    "scheduler": "scheduler_name", "scheduler_name": "scheduler_name",
-    "denoise": "denoise", "clip_skip": "clip_skip",
-}
-
-
-_INT_ATTRS = {"width", "height", "seed", "steps", "clip_skip"}
-_FLOAT_ATTRS = {"cfg", "denoise"}
-
-
-def map_to_metadata_attrs(resolved: dict[str, Any]) -> dict[str, Any]:
-    """Map a resolved dict onto Metadata scalar attributes for filename templating.
-
-    Recognised field names (and aliases) are coerced to the attribute's type;
-    a `size: [w, h]` value is unpacked onto width/height. Unrecognised or
-    uncoercible fields are dropped — they still travel verbatim in
-    gallery_metadata, this only feeds the saver's `%seed`, `%steps`, etc.
-    """
-    size = resolved.get("size")
-    if isinstance(size, list) and len(size) == 2:
-        resolved = {**resolved, "width": size[0], "height": size[1]}
-
-    attrs: dict[str, Any] = {}
-    for field, value in resolved.items():
-        attr = _METADATA_ALIASES.get(field)
-        if attr is None or value is None:
-            continue
-        try:
-            attrs[attr] = _coerce(attr, value)
-        except (ValueError, TypeError):
-            pass
-    return attrs
-
-
-def _coerce(attr: str, value: Any) -> Any:
-    if attr in _INT_ATTRS:
-        return int(value)
-    if attr in _FLOAT_ATTRS:
-        return float(value)
-    return value if isinstance(value, str) else str(value)
-
-
-def _build_metadata(resolved: dict[str, Any]):
-    """Wrap a resolved dict in a Metadata object for the Image Saver.
-
-    The resolved dict becomes gallery_metadata verbatim; recognised field names
-    also populate the scalar attributes the saver uses for filename templating.
-    Imported lazily so this module stays free of ComfyUI (`folder_paths`) deps
-    and the resolution helpers above remain unit-testable in isolation.
-    """
-    from .metadata import Metadata
-
-    meta = Metadata(
-        model_name="", positive="", negative="", width=512, height=512, seed=0,
-        steps=20, cfg=7.0, sampler_name="", scheduler_name="normal", denoise=1.0,
-        clip_skip=0, additional_hashes="", ckpt_path="",
-        gallery_metadata=dict(resolved),
-    )
-    for attr, value in map_to_metadata_attrs(resolved).items():
-        setattr(meta, attr, value)
-    return meta
+        if prompt:
+            workflow = extra_pnginfo.get("workflow") if isinstance(extra_pnginfo, dict) else None
+            _, resolve_errors = resolve_bindings(parsed, prompt, workflow)
+            for err in resolve_errors:
+                print(f"WorkflowMetadataResolver: {err}")
+        return {}

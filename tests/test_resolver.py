@@ -20,7 +20,6 @@ _spec.loader.exec_module(introspection)
 
 parse_bindings = introspection.parse_bindings
 resolve_bindings = introspection.resolve_bindings
-map_to_metadata_attrs = introspection.map_to_metadata_attrs
 _is_link = introspection._is_link
 _follow_link = introspection._follow_link
 
@@ -77,10 +76,18 @@ class ParseBindingsTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_malformed_lines_reported_and_skipped(self):
-        text = "no_separator_here\nfield_only:\n: 3.steps\ngood: #3.cfg"
+        text = "no_separator_here\n: 3.steps\ngood: #3.cfg"
         bindings, errors = parse_bindings(text)
         self.assertEqual(bindings, [("good", "3", "cfg")])
-        self.assertEqual(len(errors), 3)
+        self.assertEqual(len(errors), 2)
+
+    def test_unbound_rows_skipped_silently(self):
+        # A labelled row with no target (`field:`) is an unbound placeholder,
+        # not an error — the component editor round-trips these.
+        text = "positive:\nsteps: #3.steps\nmodel =\nseed:#3.seed"
+        bindings, errors = parse_bindings(text)
+        self.assertEqual(bindings, [("steps", "3", "steps"), ("seed", "3", "seed")])
+        self.assertEqual(errors, [])
 
 
 class IsLinkTests(unittest.TestCase):
@@ -148,31 +155,6 @@ class ResolveBindingsTests(unittest.TestCase):
         _, errors = resolve_bindings(bindings, prompt, workflow)
         self.assertEqual(len(errors), 1)
         self.assertIn("workflow", errors[0])
-
-
-class MapToMetadataAttrsTests(unittest.TestCase):
-    def test_aliases_and_coercion(self):
-        attrs = map_to_metadata_attrs({
-            "model": "sdxl", "sampler": "euler", "steps": "30", "cfg": "7.5",
-        })
-        self.assertEqual(attrs, {
-            "model_name": "sdxl", "sampler_name": "euler", "steps": 30, "cfg": 7.5,
-        })
-
-    def test_size_unpacks_to_width_height(self):
-        attrs = map_to_metadata_attrs({"size": [832, 1216]})
-        self.assertEqual(attrs, {"width": 832, "height": 1216})
-
-    def test_unknown_fields_dropped(self):
-        attrs = map_to_metadata_attrs({"my_custom_note": "hello", "steps": 20})
-        self.assertEqual(attrs, {"steps": 20})
-
-    def test_uncoercible_value_skipped(self):
-        attrs = map_to_metadata_attrs({"steps": "not a number", "cfg": 7.0})
-        self.assertEqual(attrs, {"cfg": 7.0})
-
-    def test_none_values_skipped(self):
-        self.assertEqual(map_to_metadata_attrs({"steps": None}), {})
 
 
 class FollowLinkTests(unittest.TestCase):
