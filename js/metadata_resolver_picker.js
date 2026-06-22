@@ -79,6 +79,35 @@ function captureFields(node) {
     return out;
 }
 
+/** Describe a field for display: its human label, whether it's a wire (no static
+ *  value), and its current widget value. Lets the picker show what a field holds
+ *  rather than just a (often cryptic) name. */
+function fieldInfo(node, name) {
+    const widget = (node?.widgets ?? []).find(w => w?.name === name && w.type !== "button");
+    if (widget) return { label: widget.label || name, wired: false, value: widget.value };
+    return { label: name, wired: true, value: undefined };
+}
+
+/** Short, single-line preview of a widget value for the picker. */
+function previewValue(v) {
+    if (v == null || v === "") return "";
+    if (typeof v === "string") {
+        const s = v.replace(/\s+/g, " ").trim();
+        return s.length > 40 ? s.slice(0, 40) + "…" : s;
+    }
+    if (typeof v === "object") return Array.isArray(v) ? "[…]" : "{…}";
+    return String(v);
+}
+
+/** Display label for a field option: "label · value" for widgets, "label → wired"
+ *  for linked inputs (which carry no static value to capture). */
+function fieldOptionLabel(node, name) {
+    const info = fieldInfo(node, name);
+    if (info.wired) return `${info.label} → wired`;
+    const preview = previewValue(info.value);
+    return preview ? `${info.label} · ${preview}` : info.label;
+}
+
 function inputSource(graph, node, inputName) {
     const input = (node?.inputs ?? []).find(i => i?.name === inputName);
     if (!input || input.link == null) return null;
@@ -260,7 +289,9 @@ function fillInputSelect(sel, graph, row) {
     sel.add(new Option("(field)", ""));
     const node = row.nodeId != null ? graph?.getNodeById?.(Number(row.nodeId)) : null;
     const fields = node ? captureFields(node) : [];
-    for (const f of fields) sel.add(new Option(f, f));
+    // Option text shows the field's current value (or "→ wired"); option value
+    // stays the bare field name so bindings serialize unchanged.
+    for (const f of fields) sel.add(new Option(fieldOptionLabel(node, f), f));
     if (row.input && !fields.includes(row.input)) sel.add(new Option(`${row.input} (missing)`, row.input));
     sel.value = row.input ?? "";
 }
@@ -395,7 +426,7 @@ app.registerExtension({
                 has_submenu: true,
                 submenu: {
                     options: fields.map(input => ({
-                        content: input,
+                        content: fieldOptionLabel(source, input),
                         callback: (v, o, e) => sendCapture(source, input, e),
                     })),
                 },
