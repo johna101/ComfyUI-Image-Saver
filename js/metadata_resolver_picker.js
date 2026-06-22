@@ -376,7 +376,10 @@ function setupResolverEditor(node) {
     addBtn.textContent = "+ Add"; addBtn.title = "Add a binding row";
     const autoBtn = document.createElement("button");
     autoBtn.textContent = "Auto-fill"; autoBtn.title = "Trace the sampler and fill common fields + LoRAs";
-    toolbar.append(addBtn, autoBtn);
+    const refreshBtn = document.createElement("button");
+    refreshBtn.textContent = "↻"; refreshBtn.title = "Refresh node/field lookups from the current graph";
+    refreshBtn.style.flex = "0 0 28px";
+    toolbar.append(addBtn, autoBtn, refreshBtn);
     container.appendChild(toolbar);
 
     addBtn.addEventListener("click", () => {
@@ -388,6 +391,9 @@ function setupResolverEditor(node) {
         for (const b of autoFillRows(node.graph)) upsertRow(node, b.field, b.nodeId, b.input);
         renderRows(node); syncRows(node);
     });
+    // Re-read the live graph: picks up new/renamed nodes, new widgets, and
+    // changed values without a browser refresh.
+    refreshBtn.addEventListener("click", () => renderRows(node));
 
     // The DOM widget IS the `bindings` input: it serializes the rows into the
     // prompt (which the gallery reads), so there is no separate text widget.
