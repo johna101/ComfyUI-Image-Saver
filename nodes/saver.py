@@ -253,18 +253,19 @@ def _save_images(
 
 
 def _get_base_suffix(output_path: str, filename_prefix: str, extension: str, batch_size: int) -> int | None:
-    """Calculate the base suffix for batch naming. Returns None for single images with no existing files."""
+    """Calculate the starting suffix for batch naming. Returns None for a single new image."""
     existing_files = [f for f in os.listdir(output_path) if f.startswith(filename_prefix) and f.endswith(extension)]
 
     if batch_size == 1 and not existing_files:
         return None
 
     suffixes: list[int] = []
+    suffix_prefix = f"{filename_prefix}_"
     for f in existing_files:
         name, _ = os.path.splitext(f)
-        parts = name.split('_')
-        if parts[-1].isdigit():
-            suffixes.append(int(parts[-1]))
+        suffix = name.removeprefix(suffix_prefix)
+        if name != suffix and suffix.isdigit():
+            suffixes.append(int(suffix))
 
     if suffixes:
         return max(suffixes) + 1
@@ -273,7 +274,7 @@ def _get_base_suffix(output_path: str, filename_prefix: str, extension: str, bat
 
 
 def _format_batch_filename(filename_prefix: str, base_suffix: int | None, batch_index: int) -> str:
-    """Format filename with batch suffix. If base_suffix is None, returns plain filename."""
+    """Format a batch filename. Returns the plain prefix when base_suffix is None."""
     if base_suffix is None:
         return filename_prefix
     return f"{filename_prefix}_{base_suffix + batch_index:02d}"
