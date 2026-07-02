@@ -34,7 +34,9 @@ function injectStyles() {
             background:var(--comfy-input-bg,#222); color:var(--input-text,#ddd);
             border:1px solid var(--border-color,#444); border-radius:4px;
             padding:2px 6px; font-size:11px; height:22px; box-sizing:border-box; }
-        .imgsaver-resolver input.key { flex:0 0 80px; min-width:0; }
+        .imgsaver-resolver input.key { flex:0 0 108px; min-width:0; }
+        /* items nested under a group read one step in */
+        .imgsaver-resolver .row.nested .handle { margin-left:10px; }
         .imgsaver-resolver button.node { flex:1 1 0; min-width:0; overflow:hidden;
             text-overflow:ellipsis; white-space:nowrap; cursor:pointer; text-align:left; }
         .imgsaver-resolver select.input { flex:1 1 0; min-width:0; text-overflow:ellipsis; }
@@ -96,8 +98,8 @@ const TEMPLATE = `
     <div v-for="(e,i) in model.entries" :key="e.id"
          class="row" :class="rowClass(e,i)"
          @dragover.prevent="onDragOver($event,i)" @drop.prevent="onDrop(i)">
-      <span class="handle" title="Drag to reorder" draggable="true"
-            @dragstart="onDragStart(i)" @dragend="onDragEnd">⠿</span>
+      <span class="handle" :title="e.kind==='group' ? 'Drag to move the whole group' : 'Drag to reorder'"
+            draggable="true" @dragstart="onDragStart(i)" @dragend="onDragEnd">⠿</span>
 
       <template v-if="e.kind === 'group'">
         <input class="gtitle" :value="e.title" @change="setTitle(e,$event.target.value)"
@@ -213,6 +215,8 @@ export function mountEditor({ container, initialEntries = [], getGraph, onChange
                 if (i === dragFrom.value) cls.dragging = true;
                 if (i === dropAt.value && dragFrom.value !== -1) cls["drop-before"] = true;
                 if (e.kind === "group") { cls.group = true; return cls; }
+                // A field row is "nested" when a group header precedes it.
+                for (let j = 0; j < i; j++) if (model.entries[j].kind === "group") { cls.nested = true; break; }
                 const invalid = nodeMissing(e) || inputMissing(e);
                 const bound = !!(e.nodeId && e.input) && !invalid;
                 cls.invalid = invalid;
@@ -241,33 +245,44 @@ export function mountEditor({ container, initialEntries = [], getGraph, onChange
             const autoFill = () => {
                 const traced = autoFillEntries(graph());
                 if (!traced.length) return;
-                if (!model.entries.some(e => e.kind === "field" && e.key)) {
-                    // Empty model → build a fresh grouped layout.
-                    let lastGroup = null;
-                    for (const t of traced) {
-                        if (t.group && t.group !== lastGroup) { model.entries.push(makeGroup(t.group)); lastGroup = t.group; }
-                        model.entries.push(makeField(t));
+                // Non-destructive: never touch existing rows — only append fields whose
+                // key isn't already present, creating a group header when a group is new.
+                const haveKeys = new Set(model.entries.filter(e => e.kind === "field").map(e => e.key));
+                const haveGroups = new Set(model.entries.filter(e => e.kind === "group").map(e => e.title));
+                let lastGroup = null;
+                for (const t of traced) {
+                    if (haveKeys.has(t.key)) continue;
+                    if (t.group && t.group !== lastGroup && !haveGroups.has(t.group)) {
+                        model.entries.push(makeGroup(t.group));
+                        haveGroups.add(t.group);
                     }
-                } else {
-                    // Non-empty → upsert by key, append anything new (no group churn).
-                    for (const t of traced) {
-                        const row = model.entries.find(e => e.kind === "field" && e.key === t.key);
-                        if (row) { row.nodeId = t.nodeId; row.input = t.input; if (row.type === "auto") row.type = t.type; }
-                        else model.entries.push(makeField(t));
-                    }
+                    lastGroup = t.group;
+                    model.entries.push(makeField(t));
+                    haveKeys.add(t.key);
                 }
                 changed();
             };
             const refresh = () => { rev.value++; };
 
             // ---- drag reorder ----
+            // A group header drags its whole block (the header + the field rows that
+            // follow it up to the next header); a field row drags on its own.
+            const blockLength = (from) => {
+                if (model.entries[from]?.kind !== "group") return 1;
+                let end = from + 1;
+                while (end < model.entries.length && model.entries[end].kind !== "group") end++;
+                return end - from;
+            };
             const onDragStart = (i) => { dragFrom.value = i; };
             const onDragOver = (ev, i) => { ev.dataTransfer.dropEffect = "move"; dropAt.value = i; };
             const onDrop = (i) => {
                 const from = dragFrom.value;
-                if (from !== -1 && from !== i) {
-                    const [moved] = model.entries.splice(from, 1);
-                    model.entries.splice(from < i ? i - 1 : i, 0, moved);
+                const len = from === -1 ? 0 : blockLength(from);
+                // Ignore a drop inside the block being moved.
+                if (from !== -1 && !(i >= from && i < from + len)) {
+                    const block = model.entries.splice(from, len);
+                    const insertAt = i > from ? i - len : i;
+                    model.entries.splice(insertAt, 0, ...block);
                     changed();
                 }
                 dragFrom.value = -1; dropAt.value = -1;

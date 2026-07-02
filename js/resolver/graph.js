@@ -221,7 +221,9 @@ function loraSlots(node) {
     return slots;
 }
 
-/** Trace a sampler-centred graph into grouped, typed entries (mirrors the gallery). */
+/** Trace a sampler-centred graph into grouped, typed entries (mirrors the gallery).
+ *  Grouped Standard (prompts, model, size) → Sampling → LoRAs, each group emitted
+ *  contiguously so a single header covers it. */
 export function autoFillEntries(graph) {
     const sampler = findSampler(graph);
     if (!sampler) return [];
@@ -232,12 +234,18 @@ export function autoFillEntries(graph) {
     const add = (key, nodeId, input, type, group) =>
         out.push({ key, nodeId: String(nodeId), input, type, group });
 
-    if (names.has("positive")) add("positive", sid, "positive", "prompt", "Prompts");
-    if (names.has("negative")) add("negative", sid, "negative", "prompt", "Prompts");
-
+    // --- Standard: prompts, model, dimensions ---
+    if (names.has("positive")) add("positive", sid, "positive", "prompt", "Standard");
+    if (names.has("negative")) add("negative", sid, "negative", "prompt", "Standard");
     const loader = traceToWidget(graph, sampler, "model", ["ckpt_name", "unet_name"]);
-    if (loader) add("model", loader.node.id, loader.widget, "string", "Model");
+    if (loader) add("model", loader.node.id, loader.widget, "string", "Standard");
+    const latent = traceToSize(graph, sampler, "latent_image");
+    if (latent) {
+        add("width", latent.id, "width", "int", "Standard");
+        add("height", latent.id, "height", "int", "Standard");
+    }
 
+    // --- Sampling ---
     for (const [key, input, type] of [
         ["sampler", "sampler_name", "enum"], ["scheduler", "scheduler", "enum"],
         ["steps", "steps", "int"], ["cfg", "cfg", "float"], ["denoise", "denoise", "float"],
@@ -245,12 +253,7 @@ export function autoFillEntries(graph) {
     if (names.has("seed")) add("seed", sid, "seed", "int", "Sampling");
     else if (names.has("noise_seed")) add("seed", sid, "noise_seed", "int", "Sampling");
 
-    const latent = traceToSize(graph, sampler, "latent_image");
-    if (latent) {
-        add("width", latent.id, "width", "int", "Dimensions");
-        add("height", latent.id, "height", "int", "Dimensions");
-    }
-
+    // --- LoRAs ---
     for (const n of graph?._nodes ?? []) {
         if (!/Power Lora Loader/i.test(nodeClass(n))) continue;
         for (const slot of loraSlots(n)) {
