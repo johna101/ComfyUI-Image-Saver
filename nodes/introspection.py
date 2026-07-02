@@ -88,12 +88,17 @@ class WorkflowInputValue:
 
 
 def parse_bindings(text: str) -> tuple[list[tuple[str, str, str]], list[str]]:
-    """Parse a multi-line binding spec into (field, node_id, input_name) tuples.
+    """Parse a binding spec into (field, node_id, input_name) tuples.
 
-    Each line is `field: #node_id.input_name` (the `:` may be `=`, the `#` is
-    optional). Blank lines and lines starting with `#` or `//` are ignored.
-    Returns (bindings, errors); malformed lines are skipped and reported.
+    The editor writes JSON (v2): `{"version": 2, "entries": [...]}` where each
+    entry is a `field` ({key, node, input}) or a `group` header (ignored here).
+    The legacy line format — `field: #node_id.input_name` (the `:` may be `=`,
+    the `#` optional) — is still parsed so old workflows resolve unchanged.
+    Returns (bindings, errors); malformed rows are skipped and reported.
     """
+    if text and text.lstrip().startswith("{"):
+        return _parse_bindings_json(text)
+
     bindings: list[tuple[str, str, str]] = []
     errors: list[str] = []
 
@@ -125,6 +130,35 @@ def parse_bindings(text: str) -> tuple[list[tuple[str, str, str]], list[str]]:
             errors.append(f"line {lineno}: pointer must be 'node_id.input_name' — '{raw}'")
             continue
 
+        bindings.append((field, node_id, input_name))
+
+    return bindings, errors
+
+
+def _parse_bindings_json(text: str) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Parse the JSON (v2) binding spec. Group headers and unbound rows are
+    skipped silently; only fully-bound field entries become bindings."""
+    import json
+
+    bindings: list[tuple[str, str, str]] = []
+    errors: list[str] = []
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError) as exc:
+        return [], [f"invalid bindings JSON: {exc}"]
+
+    entries = obj.get("entries") if isinstance(obj, dict) else None
+    if not isinstance(entries, list):
+        return [], ["bindings JSON missing an 'entries' list"]
+
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("kind") == "group":
+            continue
+        field = str(entry.get("key", "")).strip()
+        node_id = str(entry.get("node", "")).strip()
+        input_name = str(entry.get("input", "")).strip()
+        if not field or not node_id or not input_name:
+            continue  # unbound / placeholder row — not an error
         bindings.append((field, node_id, input_name))
 
     return bindings, errors

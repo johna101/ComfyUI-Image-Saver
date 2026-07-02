@@ -1,198 +1,45 @@
 import { app } from '../../scripts/app.js'
 
-// Component-row editor for the Workflow Metadata Resolver node.
+// Component editor for the Workflow Metadata Resolver node.
 //
 // The node is a pure declaration: each row binds a metadata `field` to a value in
-// the graph (`#node_id.input`). Rows are edited as components (label + node picker
-// + input picker), not free text — the underlying `bindings` string widget is kept
-// (hidden) purely so the rows serialize into the workflow/prompt, where the gallery
-// reads them back. Node IDs are stored; node *names* are displayed.
+// the graph (`#node_id.input`), with an optional group header and value type. The
+// rows are edited in a Vue app (js/resolver/editor.js); this module owns the node
+// lifecycle — the hidden `bindings` DOM widget that serializes the rows into the
+// workflow/prompt (where the gallery reads them), sizing, and the right-click
+// "Send to Metadata Resolver" capture. Rows serialize to JSON (v2); the legacy
+// line format still parses so old workflows open cleanly.
 
-const RESOLVER_NODE = "Workflow Metadata Resolver (Image Saver)";
+import { mountEditor } from './resolver/editor.js'
+import { RESOLVER_NODE, nodeClass, captureFields, fieldOptionLabel, suggestFieldName, deriveType } from './resolver/graph.js'
+import { serialize, deserialize, makeField, boundKeys } from './resolver/serialize.js'
+
 const BINDINGS_WIDGET = "bindings";
 
-// Suggested field names for common inputs, so captured rows read cleanly.
-const FIELD_ALIASES = {
-    ckpt_name: "model", unet_name: "model", model_name: "model",
-    sampler_name: "sampler", scheduler: "scheduler", noise_seed: "seed",
-};
+// ---- node sizing ------------------------------------------------------------
 
-// ---- binding string <-> rows ------------------------------------------------
-
-function separatorIndex(line) {
-    const found = [":", "="].map(c => line.indexOf(c)).filter(i => i >= 0);
-    return found.length ? Math.min(...found) : -1;
+/** Height for the DOM widget: measure the rendered content (so the template menu,
+ *  drag state, and any wrapping are all accounted for), falling back to a
+ *  per-entry estimate before the first paint. */
+function contentHeight(node) {
+    const measured = node._resolverListEl?.scrollHeight;
+    if (measured > 0) return measured + 6;
+    const rows = node._resolverModel?.entries?.length ?? 0;
+    return 26 * rows + 40;
 }
 
-/** Parse the bindings string into rows [{field, nodeId|null, input|null}]. */
-function parseRows(text) {
-    const rows = [];
-    for (const raw of String(text ?? "").split("\n")) {
-        const line = raw.trim();
-        if (!line || line.startsWith("//")) continue;
-        const idx = separatorIndex(line);
-        if (idx < 0) continue;
-        const field = line.slice(0, idx).trim();
-        if (!field) continue;
-        const pointer = line.slice(idx + 1).trim().replace(/^#/, "").trim();
-        if (!pointer) { rows.push({ field, nodeId: null, input: null }); continue; }
-        const dot = pointer.indexOf(".");
-        if (dot < 0) { rows.push({ field, nodeId: null, input: null }); continue; }
-        rows.push({ field, nodeId: pointer.slice(0, dot).trim(), input: pointer.slice(dot + 1).trim() });
-    }
-    return rows;
+/** Resize the node to fit its rows WITHOUT collapsing the user's chosen width —
+ *  computeSize()'s width is only a minimum, so keep whichever is larger. Runs on
+ *  the next frame so the measured content height reflects the latest render. */
+function resizeNode(node) {
+    requestAnimationFrame(() => {
+        const computed = node.computeSize();
+        node.setSize([Math.max(node.size?.[0] ?? 0, computed[0]), computed[1]]);
+        node.graph?.setDirtyCanvas(true, true);
+    });
 }
 
-/** Serialize rows back to the bindings string (`field: #id.input`, or `field:` if unbound). */
-function serializeRows(rows) {
-    return rows
-        .filter(r => r.field)
-        .map(r => (r.nodeId && r.input) ? `${r.field}: #${r.nodeId}.${r.input}` : `${r.field}:`)
-        .join("\n");
-}
-
-// ---- graph helpers ----------------------------------------------------------
-
-function nodeClass(node) { return node?.type ?? node?.comfyClass ?? ""; }
-function nodeLabel(node) { return `${node.title || nodeClass(node)} (#${node.id})`; }
-
-/** Union of a node's widget names and input names. */
-function fieldNames(node) {
-    const names = new Set();
-    for (const w of node?.widgets ?? []) if (w?.name) names.add(w.name);
-    for (const i of node?.inputs ?? []) if (i?.name) names.add(i.name);
-    return names;
-}
-
-/** Capturable fields of a node: widgets, plus linked inputs (resolvable via wire-follow). */
-function captureFields(node) {
-    const seen = new Set();
-    const out = [];
-    for (const w of node?.widgets ?? []) {
-        if (!w?.name || w.type === "button" || seen.has(w.name)) continue;
-        seen.add(w.name); out.push(w.name);
-    }
-    for (const i of node?.inputs ?? []) {
-        if (!i?.name || i.link == null || seen.has(i.name)) continue;
-        seen.add(i.name); out.push(i.name);
-    }
-    return out;
-}
-
-/** Describe a field for display: its human label, whether it's a wire (no static
- *  value), and its current widget value. Lets the picker show what a field holds
- *  rather than just a (often cryptic) name. */
-function fieldInfo(node, name) {
-    const widget = (node?.widgets ?? []).find(w => w?.name === name && w.type !== "button");
-    if (widget) return { label: widget.label || name, wired: false, value: widget.value };
-    return { label: name, wired: true, value: undefined };
-}
-
-/** Short, single-line preview of a widget value for the picker. */
-function previewValue(v) {
-    if (v == null || v === "") return "";
-    if (typeof v === "string") {
-        const s = v.replace(/\s+/g, " ").trim();
-        return s.length > 40 ? s.slice(0, 40) + "…" : s;
-    }
-    if (typeof v === "object") return Array.isArray(v) ? "[…]" : "{…}";
-    return String(v);
-}
-
-/** Display label for a field option: "label · value" for widgets, "label → wired"
- *  for linked inputs (which carry no static value to capture). */
-function fieldOptionLabel(node, name) {
-    const info = fieldInfo(node, name);
-    if (info.wired) return `${info.label} → wired`;
-    const preview = previewValue(info.value);
-    return preview ? `${info.label} · ${preview}` : info.label;
-}
-
-function inputSource(graph, node, inputName) {
-    const input = (node?.inputs ?? []).find(i => i?.name === inputName);
-    if (!input || input.link == null) return null;
-    const link = graph.links?.[input.link];
-    return link ? (graph.getNodeById(link.origin_id) ?? null) : null;
-}
-
-function findSampler(graph) {
-    return (graph?._nodes ?? []).find(n => /KSampler|SamplerCustom/.test(nodeClass(n))) ?? null;
-}
-
-function traceToWidget(graph, node, inputName, targets, depth = 0) {
-    if (depth > 16) return null;
-    const src = inputSource(graph, node, inputName);
-    if (!src) return null;
-    const names = fieldNames(src);
-    for (const t of targets) if (names.has(t)) return { node: src, widget: t };
-    if (names.has(inputName)) return traceToWidget(graph, src, inputName, targets, depth + 1);
-    return null;
-}
-
-function traceToSize(graph, node, inputName, depth = 0) {
-    if (depth > 16) return null;
-    const src = inputSource(graph, node, inputName);
-    if (!src) return null;
-    const names = fieldNames(src);
-    if (names.has("width") && names.has("height")) return src;
-    for (const p of ["latent_image", "samples", "latent"]) {
-        if (names.has(p)) { const r = traceToSize(graph, src, p, depth + 1); if (r) return r; }
-    }
-    return null;
-}
-
-/** Power Lora Loader (rgthree) lora slots: widgets whose value is a {lora, on,...} dict. */
-function loraSlots(node) {
-    const slots = [];
-    for (const w of node?.widgets ?? []) {
-        if (w?.name && w.value && typeof w.value === "object" && typeof w.value.lora === "string" && w.value.lora) {
-            slots.push({ input: w.name, enabled: w.value.on !== false });
-        }
-    }
-    return slots;
-}
-
-/** Trace a sampler-centred graph into rows [{field, nodeId, input}] (mirrors the gallery parser). */
-function autoFillRows(graph) {
-    const sampler = findSampler(graph);
-    if (!sampler) return [];
-
-    const sid = String(sampler.id);
-    const names = fieldNames(sampler);
-    const out = [];
-    const add = (field, nodeId, input) => out.push({ field, nodeId: String(nodeId), input });
-
-    for (const [field, input] of [["steps", "steps"], ["cfg", "cfg"], ["sampler", "sampler_name"], ["scheduler", "scheduler"], ["denoise", "denoise"]]) {
-        if (names.has(input)) add(field, sid, input);
-    }
-    if (names.has("seed")) add("seed", sid, "seed");
-    else if (names.has("noise_seed")) add("seed", sid, "noise_seed");
-    if (names.has("positive")) add("positive", sid, "positive");
-    if (names.has("negative")) add("negative", sid, "negative");
-
-    const loader = traceToWidget(graph, sampler, "model", ["ckpt_name", "unet_name"]);
-    if (loader) add("model", loader.node.id, loader.widget);
-
-    const latent = traceToSize(graph, sampler, "latent_image");
-    if (latent) { add("width", latent.id, "width"); add("height", latent.id, "height"); }
-
-    // LoRAs: one row per enabled slot across any Power Lora Loader in the graph.
-    for (const n of graph?._nodes ?? []) {
-        if (!/Power Lora Loader/i.test(nodeClass(n))) continue;
-        for (const slot of loraSlots(n)) {
-            if (slot.enabled) add(slot.input, n.id, slot.input);
-        }
-    }
-    return out;
-}
-
-// ---- row editing ------------------------------------------------------------
-
-function syncRows(node) {
-    // Row state is the source of truth; the bindings DOM widget reads it on
-    // demand via getValue (see setupResolverEditor), so a redraw is all we need.
-    node.graph?.setDirtyCanvas(true, true);
-}
+// ---- stale output cleanup ---------------------------------------------------
 
 /** Remove stale output slots — the node has no outputs, but workflows saved with
  *  the older definition restore them on load. */
@@ -201,215 +48,39 @@ function stripOutputs(node) {
     while (node.outputs.length) node.removeOutput(node.outputs.length - 1);
 }
 
-/** Insert or update a row for `field`, pointing at #nodeId.input. Returns the row. */
-function upsertRow(node, field, nodeId, input) {
-    const rows = node._resolverRows;
-    let row = rows.find(r => r.field === field);
-    if (!row) { row = { field, nodeId: null, input: null }; rows.push(row); }
-    row.nodeId = nodeId != null ? String(nodeId) : null;
-    row.input = input ?? null;
-    return row;
-}
-
-function suggestFieldName(node, inputName) {
-    if (inputName === "text") {
-        const bound = new Set((node._resolverRows ?? []).map(r => r.field));
-        if (!bound.has("positive")) return "positive";
-        if (!bound.has("negative")) return "negative";
-        return "prompt";
-    }
-    return FIELD_ALIASES[inputName] ?? inputName;
-}
-
-// ---- DOM widget -------------------------------------------------------------
-
-function injectStyles() {
-    if (document.getElementById("imgsaver-resolver-css")) return;
-    const style = document.createElement("style");
-    style.id = "imgsaver-resolver-css";
-    // Themed via ComfyUI / PrimeVue CSS variables (with literal fallbacks) so the
-    // editor follows the active theme — light, dark, or custom — in both the
-    // classic and Nodes 2.0 renderers.
-    style.textContent = `
-        .imgsaver-resolver {
-            display:flex; flex-direction:column; gap:3px; padding:4px 2px;
-            font-size:11px; box-sizing:border-box; color:var(--input-text, #ddd); }
-        .imgsaver-resolver .row { display:flex; gap:3px; align-items:center; border-radius:4px; }
-        .imgsaver-resolver input.field { flex:0 0 88px; min-width:0; }
-        .imgsaver-resolver select { flex:1 1 0; min-width:0; text-overflow:ellipsis; }
-        .imgsaver-resolver input, .imgsaver-resolver select {
-            background:var(--comfy-input-bg, #222); color:var(--input-text, #ddd);
-            border:1px solid var(--border-color, #444); border-radius:4px;
-            padding:2px 6px; font-size:11px; height:22px; box-sizing:border-box; }
-        .imgsaver-resolver input:focus, .imgsaver-resolver select:focus {
-            outline:none; border-color:var(--p-primary-color, #4a90d9); }
-        /* unbound (placeholder) rows read dimmer */
-        .imgsaver-resolver .row.unbound input.field {
-            color:var(--descrip-text, #888); font-style:italic; }
-        .imgsaver-resolver .row.unbound select { opacity:0.6; }
-        /* invalid binding: faint red row tint + flagged controls */
-        .imgsaver-resolver .row.invalid { background:rgba(192,80,77,0.14); }
-        .imgsaver-resolver .row.invalid input.field,
-        .imgsaver-resolver .row.invalid select.bad {
-            border-color:var(--error-text, #c0504d); }
-        .imgsaver-resolver button {
-            background:var(--comfy-menu-bg, #333); color:var(--input-text, #ddd);
-            border:1px solid var(--border-color, #444); border-radius:4px;
-            cursor:pointer; font-size:11px; height:22px; }
-        .imgsaver-resolver button:hover { border-color:var(--p-primary-color, #4a90d9); }
-        .imgsaver-resolver button.remove { flex:0 0 24px; }
-        .imgsaver-resolver button.remove:hover {
-            border-color:var(--error-text, #c0504d); color:var(--error-text, #c0504d); }
-        .imgsaver-resolver .toolbar { display:flex; gap:4px; margin-top:3px; }
-        .imgsaver-resolver .toolbar button { flex:1 1 0; height:24px; }
-    `;
-    document.head.appendChild(style);
-}
-
-function makeNodeSelect(graph, row) {
-    const sel = document.createElement("select");
-    const blank = new Option("(unbound)", "");
-    sel.add(blank);
-    const nodes = (graph?._nodes ?? []).filter(n => nodeClass(n) !== RESOLVER_NODE)
-        .sort((a, b) => nodeLabel(a).localeCompare(nodeLabel(b)));
-    for (const n of nodes) sel.add(new Option(nodeLabel(n), String(n.id)));
-
-    if (row.nodeId != null) {
-        const exists = (graph?._nodes ?? []).some(n => String(n.id) === row.nodeId);
-        if (!exists) sel.add(new Option(`#${row.nodeId} (missing)`, row.nodeId));
-        sel.value = row.nodeId;
-    } else {
-        sel.value = "";
-    }
-    return sel;
-}
-
-function fillInputSelect(sel, graph, row) {
-    sel.innerHTML = "";
-    sel.add(new Option("(field)", ""));
-    const node = row.nodeId != null ? graph?.getNodeById?.(Number(row.nodeId)) : null;
-    const fields = node ? captureFields(node) : [];
-    // Option text shows the field's current value (or "→ wired"); option value
-    // stays the bare field name so bindings serialize unchanged.
-    for (const f of fields) sel.add(new Option(fieldOptionLabel(node, f), f));
-    if (row.input && !fields.includes(row.input)) sel.add(new Option(`${row.input} (missing)`, row.input));
-    sel.value = row.input ?? "";
-}
-
-function markValidity(rowEl, graph, row, nodeSel, inputSel) {
-    const node = row.nodeId != null ? graph?.getNodeById?.(Number(row.nodeId)) : null;
-    const nodeMissing = row.nodeId != null && !node;
-    const inputMissing = !!row.input && (!node || !fieldNames(node).has(row.input));
-    const invalid = nodeMissing || inputMissing;
-    const bound = !!(row.nodeId && row.input) && !invalid;
-    rowEl.classList.toggle("invalid", invalid);
-    rowEl.classList.toggle("unbound", !invalid && !bound);
-    nodeSel.classList.toggle("bad", nodeMissing);
-    inputSel.classList.toggle("bad", inputMissing);
-    rowEl.title = nodeMissing ? `Node #${row.nodeId} is not in this workflow`
-        : inputMissing ? `Input '${row.input}' is not on that node` : "";
-}
-
-function renderRows(node) {
-    const graph = node.graph;
-    const list = node._resolverListEl;
-    if (!list) return;
-    list.innerHTML = "";
-
-    node._resolverRows.forEach((row, i) => {
-        const rowEl = document.createElement("div");
-        rowEl.className = "row";
-
-        const field = document.createElement("input");
-        field.className = "field"; field.type = "text"; field.value = row.field;
-        field.placeholder = "field"; field.title = "Metadata field name";
-
-        const nodeSel = makeNodeSelect(graph, row);
-        const inputSel = document.createElement("select");
-        fillInputSelect(inputSel, graph, row);
-
-        const remove = document.createElement("button");
-        remove.className = "remove"; remove.textContent = "✕"; remove.title = "Remove row";
-
-        const revalidate = () => markValidity(rowEl, graph, row, nodeSel, inputSel);
-
-        field.addEventListener("change", () => { row.field = field.value.trim(); syncRows(node); });
-        nodeSel.addEventListener("change", () => {
-            row.nodeId = nodeSel.value || null;
-            row.input = null;
-            fillInputSelect(inputSel, graph, row);
-            revalidate(); syncRows(node);
-        });
-        inputSel.addEventListener("change", () => { row.input = inputSel.value || null; revalidate(); syncRows(node); });
-        remove.addEventListener("click", () => { node._resolverRows.splice(i, 1); renderRows(node); syncRows(node); });
-
-        rowEl.append(field, nodeSel, inputSel, remove);
-        list.appendChild(rowEl);
-        revalidate();
-    });
-
-    node._resolverResize?.();
-}
+// ---- editor setup -----------------------------------------------------------
 
 function setupResolverEditor(node) {
     if (node._resolverListEl) return;
 
     // Take the auto-created text widget's value, then remove it entirely: the rows
-    // are the data, and the DOM widget below serializes them as `bindings` itself
-    // (no separate text box to hide).
+    // are the data, and the DOM widget below serializes them as `bindings` itself.
     const idx = (node.widgets ?? []).findIndex(w => w.name === BINDINGS_WIDGET);
     const initial = idx >= 0 ? node.widgets[idx].value : "";
     if (idx >= 0) node.widgets.splice(idx, 1);
 
-    injectStyles();
-    node._resolverRows = parseRows(initial);
-
     const container = document.createElement("div");
-    container.className = "imgsaver-resolver";
-    const list = document.createElement("div");
-    node._resolverListEl = list;
-    container.appendChild(list);
+    node._resolverListEl = container;
 
-    const toolbar = document.createElement("div");
-    toolbar.className = "toolbar";
-    const addBtn = document.createElement("button");
-    addBtn.textContent = "+ Add"; addBtn.title = "Add a binding row";
-    const autoBtn = document.createElement("button");
-    autoBtn.textContent = "Auto-fill"; autoBtn.title = "Trace the sampler and fill common fields + LoRAs";
-    const refreshBtn = document.createElement("button");
-    refreshBtn.textContent = "↻"; refreshBtn.title = "Refresh node/field lookups from the current graph";
-    refreshBtn.style.flex = "0 0 28px";
-    toolbar.append(addBtn, autoBtn, refreshBtn);
-    container.appendChild(toolbar);
-
-    addBtn.addEventListener("click", () => {
-        node._resolverRows.push({ field: "", nodeId: null, input: null });
-        renderRows(node); syncRows(node);
-        list.lastChild?.querySelector("input.field")?.focus();
+    const { model, setEntries } = mountEditor({
+        container,
+        initialEntries: deserialize(initial),
+        getGraph: () => node.graph,
+        onChange: () => resizeNode(node),
     });
-    autoBtn.addEventListener("click", () => {
-        for (const b of autoFillRows(node.graph)) upsertRow(node, b.field, b.nodeId, b.input);
-        renderRows(node); syncRows(node);
-    });
-    // Re-read the live graph: picks up new/renamed nodes, new widgets, and
-    // changed values without a browser refresh.
-    refreshBtn.addEventListener("click", () => renderRows(node));
+    node._resolverModel = model;
+    node._resolverSetEntries = setEntries;
 
     // The DOM widget IS the `bindings` input: it serializes the rows into the
     // prompt (which the gallery reads), so there is no separate text widget.
     const domWidget = node.addDOMWidget(BINDINGS_WIDGET, "resolver_rows", container, {
         serialize: true,
-        getValue: () => serializeRows(node._resolverRows),
-        setValue: (v) => { node._resolverRows = parseRows(v); renderRows(node); },
+        getValue: () => serialize(model.entries),
+        setValue: (v) => { setEntries(deserialize(v)); resizeNode(node); },
     });
-    node._resolverResize = () => {
-        const rows = node._resolverRows.length;
-        domWidget.computeSize = (w) => [w, 26 * rows + 34];
-        node.setSize(node.computeSize());
-        node.graph?.setDirtyCanvas(true, true);
-    };
+    domWidget.computeSize = (w) => [w, contentHeight(node)];
 
-    renderRows(node);
+    resizeNode(node);
 }
 
 // ---- extension registration -------------------------------------------------
@@ -447,34 +118,42 @@ app.registerExtension({
                 stripOutputs(this);
             };
             // On load: drop the stale output slots and rebuild rows from the saved
-            // bindings string (read from widgets_values, robust to whether the host
-            // routed it through the DOM widget's setValue).
+            // bindings value (JSON or legacy), read from widgets_values (robust to
+            // whether the host routed it through the DOM widget's setValue).
             const onConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (info) {
                 onConfigure?.apply(this, arguments);
                 stripOutputs(this);
-                if (!this._resolverListEl) return;
+                if (!this._resolverSetEntries) return;
                 const vals = info?.widgets_values;
                 let saved = null;
                 if (Array.isArray(vals)) saved = vals.find(v => typeof v === "string");
                 else if (vals && typeof vals === "object") saved = vals[BINDINGS_WIDGET];
                 if (typeof saved === "string") {
-                    this._resolverRows = parseRows(saved);
-                    renderRows(this);
+                    this._resolverSetEntries(deserialize(saved));
+                    resizeNode(this);
                 }
             };
         }
     },
 });
 
+/** Bind `sourceNode.input` into a resolver (creating one if needed), suggesting a
+ *  field name and deriving the value type. */
 function sendCapture(sourceNode, input, event) {
     const graph = sourceNode.graph;
     const resolvers = (graph?._nodes ?? []).filter(n => nodeClass(n) === RESOLVER_NODE);
 
     const bind = (resolver) => {
-        const field = suggestFieldName(resolver, input);
-        upsertRow(resolver, field, sourceNode.id, input);
-        renderRows(resolver); syncRows(resolver);
+        const model = resolver._resolverModel;
+        if (!model) return;
+        const field = suggestFieldName(input, boundKeys(model.entries));
+        let row = model.entries.find(e => e.kind === "field" && e.key === field);
+        if (!row) { row = makeField({ key: field }); model.entries.push(row); }
+        row.nodeId = String(sourceNode.id);
+        row.input = input;
+        if (row.type === "auto") row.type = deriveType(sourceNode, input);
+        resizeNode(resolver);
     };
 
     if (resolvers.length === 0) {
@@ -487,7 +166,7 @@ function sendCapture(sourceNode, input, event) {
         bind(resolvers[0]);
     } else {
         new LiteGraph.ContextMenu(
-            resolvers.map(r => ({ content: nodeLabel(r), callback: () => bind(r) })),
+            resolvers.map(r => ({ content: `${r.title || RESOLVER_NODE} (#${r.id})`, callback: () => bind(r) })),
             { event, title: "Choose Metadata Resolver" }
         );
     }

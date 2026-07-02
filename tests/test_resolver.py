@@ -10,6 +10,7 @@ dependencies, so we load that file directly and bypass the package
 """
 
 import importlib.util
+import json
 import os
 import unittest
 
@@ -88,6 +89,41 @@ class ParseBindingsTests(unittest.TestCase):
         bindings, errors = parse_bindings(text)
         self.assertEqual(bindings, [("steps", "3", "steps"), ("seed", "3", "seed")])
         self.assertEqual(errors, [])
+
+
+class ParseBindingsJsonTests(unittest.TestCase):
+    """The editor writes JSON (v2); parse_bindings must read it as well as legacy."""
+
+    def test_json_v2_fields_and_groups(self):
+        text = json.dumps({"version": 2, "entries": [
+            {"kind": "field", "key": "positive", "node": "6", "input": "text", "type": "prompt"},
+            {"kind": "group", "title": "Sampling"},
+            {"kind": "field", "key": "steps", "node": "3", "input": "steps", "type": "int"},
+        ]})
+        bindings, errors = parse_bindings(text)
+        self.assertEqual(bindings, [("positive", "6", "text"), ("steps", "3", "steps")])
+        self.assertEqual(errors, [])
+
+    def test_json_unbound_entries_skipped(self):
+        text = json.dumps({"version": 2, "entries": [
+            {"kind": "field", "key": "cfg"},                       # no target
+            {"kind": "field", "key": "steps", "node": "3", "input": "steps"},
+        ]})
+        bindings, errors = parse_bindings(text)
+        self.assertEqual(bindings, [("steps", "3", "steps")])
+        self.assertEqual(errors, [])
+
+    def test_json_leading_whitespace_still_detected(self):
+        bindings, errors = parse_bindings(
+            '\n  {"version":2,"entries":[{"kind":"field","key":"seed","node":"3","input":"seed"}]}')
+        self.assertEqual(bindings, [("seed", "3", "seed")])
+        self.assertEqual(errors, [])
+
+    def test_malformed_json_reports_error(self):
+        bindings, errors = parse_bindings("{not valid json")
+        self.assertEqual(bindings, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("invalid bindings JSON", errors[0])
 
 
 class IsLinkTests(unittest.TestCase):
